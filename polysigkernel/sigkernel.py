@@ -117,16 +117,16 @@ class SigKernel:
         elif batch_X <= max_batch and batch_Y > max_batch:
             cutoff = int(batch_Y/2)
             Y1, Y2 = Y[:cutoff], Y[cutoff:]
-            K1 = self.kernel_matrix(X, Y1, max_batch, False)
-            K2 = self.kernel_matrix(X, Y2, max_batch, False)
+            K1 = self.kernel_matrix(X, Y1, scale=scale, max_batch=max_batch, sym=False)
+            K2 = self.kernel_matrix(X, Y2, scale=scale, max_batch=max_batch, sym=False)
             return jnp.concatenate((K1, K2), axis=1)
         
         # Case 2: X large, Y small enough
         elif batch_X > max_batch and batch_Y <= max_batch:
             cutoff = int(batch_X/2)
             X1, X2 = X[:cutoff], X[cutoff:]
-            K1 = self.kernel_matrix(X1, Y, max_batch, False)
-            K2 = self.kernel_matrix(X2, Y, max_batch, False)
+            K1 = self.kernel_matrix(X1, Y, scale=scale, max_batch=max_batch, sym=False)
+            K2 = self.kernel_matrix(X2, Y, scale=scale, max_batch=max_batch, sym=False)
             return jnp.concatenate((K1, K2), axis=0)
         
         # Case 3: Both X, Y large
@@ -136,14 +136,14 @@ class SigKernel:
             Y1, Y2 = Y[:cutoff_Y], Y[cutoff_Y:]
 
             # Compute sub-blocks
-            K11 = self.kernel_matrix(X1, Y1, max_batch, sym)
-            K12 = self.kernel_matrix(X1, Y2, max_batch, False)
-            K22 = self.kernel_matrix(X2, Y2, max_batch, sym)
+            K11 = self.kernel_matrix(X1, Y1, scale=scale, max_batch=max_batch, sym=sym)
+            K12 = self.kernel_matrix(X1, Y2, scale=scale, max_batch=max_batch, sym=False)
+            K22 = self.kernel_matrix(X2, Y2, scale=scale, max_batch=max_batch, sym=sym)
 
             if sym:
                 K21 = K12.swapaxes(0, 1)
             else:
-                K21 = self.kernel_matrix(X2, Y1, max_batch, False)
+                K21 = self.kernel_matrix(X2, Y1, scale=scale, max_batch=max_batch, sym=False)
 
             K_top = jnp.concatenate((K11, K12), axis=1)
             K_bottom = jnp.concatenate((K21, K22), axis=1)
@@ -167,7 +167,7 @@ class SigKernel:
 
         return jnp.mean(K_XX) + jnp.mean(K_YY) - 2.*jnp.mean(K_XY)
 
-    def compute_scoring_rule(self, X, y, max_batch=100):
+    def compute_scoring_rule(self, X: jax.Array, y: jax.Array, max_batch: int = 100) -> jax.Array:
         """
         Input:
             - X: jnp array of shape (batch, length_X, dim),
@@ -176,8 +176,8 @@ class SigKernel:
             - signature kernel scoring rule S(X,y) = E[k(X,X)] - 2E[k(X,y)]
         """
 
-        K_XX = self.compute_Gram(X, X, sym=True, max_batch=max_batch)
-        K_Xy = self.compute_Gram(X, y, sym=False, max_batch=max_batch)
+        K_XX = self.kernel_matrix(X, X, sym=True, max_batch=max_batch)
+        K_Xy = self.kernel_matrix(X, y, sym=False, max_batch=max_batch)
 
         K_XX_m = (jnp.sum(K_XX) - jnp.sum(jnp.diag(K_XX))) / (K_XX.shape[0] * (K_XX.shape[0] - 1.))
 
@@ -199,7 +199,7 @@ class SigKernel:
 
         return K_XX_m - 2. * jnp.mean(K_XY)
 
-    def compute_mmd(self, X, Y, max_batch=100):
+    def compute_mmd(self, X: jax.Array, Y: jax.Array, max_batch: int = 100) -> jax.Array:
         """
         Input:
             - X: jnp array of shape (batch_X, length_X, dim),
@@ -224,11 +224,11 @@ class SigKernel:
 ########################################################################################
 
 
-def c_alpha(m, alpha):
+def c_alpha(m: int, alpha: float) -> jax.Array:
     return 4. * jnp.sqrt(-jnp.log(alpha) / m)
 
-def hypothesis_test(y_pred : jnp.array, 
-                    y_test : jnp.array, 
+def hypothesis_test(y_pred: jax.Array, 
+                    y_test: jax.Array, 
                     static_kernel : str = 'linear', 
                     confidence_level : float = 0.99, 
                     **kwargs):
