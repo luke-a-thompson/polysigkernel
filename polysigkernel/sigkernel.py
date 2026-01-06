@@ -63,7 +63,7 @@ class SigKernel:
         self.T = T
 
 
-    @partial(jax.jit, static_argnums=(0,3,4))
+    @partial(jax.jit, static_argnums=(0, 3, 4, 5))
     def kernel_matrix(self, 
                       X: jnp.ndarray, 
                       Y: jnp.ndarray, 
@@ -99,7 +99,7 @@ class SigKernel:
         if scale is None:
             scale = self.scale
         else:
-            _check_positive_value(scale)
+            _check_positive_value(scale, "scale")
 
         # Optionally add time as an extra channel
         if self.add_time:
