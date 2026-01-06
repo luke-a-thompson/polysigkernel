@@ -183,7 +183,7 @@ class SigKernel:
 
         return K_XX_m - 2. * jnp.mean(K_Xy)
 
-    def compute_expected_scoring_rule(self, X, Y, max_batch=100):
+    def compute_expected_scoring_rule(self, X: jax.Array, Y: jax.Array, max_batch: int = 100) -> jax.Array:
         """
         Input:
             - X: jnp array of shape (batch_X, length_X, dim),
@@ -191,8 +191,6 @@ class SigKernel:
         Output:
             - signature kernel expected scoring rule S(X,Y) = E_Y[S(X,y)]
         """
-
-        assert not Y.requires_grad, "the second input should not require grad"
 
         K_XX = self.kernel_matrix(X, X, sym=True, max_batch=max_batch)
         K_XY = self.kernel_matrix(X, Y, sym=False, max_batch=max_batch)
