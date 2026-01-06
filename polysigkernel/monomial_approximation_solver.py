@@ -242,7 +242,7 @@ class MonomialApproximationSolver:
         
         # Determine the number of GPUs (if any)
         try:
-            num_gpus = jax.lib.xla_bridge.get_backend('gpu').device_count()
+            num_gpus = len(jax.devices("gpu"))
         except RuntimeError:
             num_gpus = 0
 
