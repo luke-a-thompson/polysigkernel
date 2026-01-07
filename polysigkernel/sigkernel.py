@@ -400,7 +400,11 @@ class SigKernel:
         return total, count
 
     def compute_distance(
-        self, X: jax.Array, Y: jax.Array, max_batch: int = 100
+        self,
+        X: jax.Array,
+        Y: jax.Array,
+        max_batch: int = 100,
+        stop_gradient_y: bool = True,
     ) -> jax.Array:
         """
         Input:
@@ -409,6 +413,8 @@ class SigKernel:
         Output:
             - scalar distance based on kernel means
         """
+        if stop_gradient_y:
+            Y = jax.lax.stop_gradient(Y)
         Xp, Yp, scale = self._prepare_inputs(X, Y, scale=None)
 
         sum_xx, cnt_xx = self._kernel_sum_all(Xp, Xp, scale=scale, max_batch=max_batch)
@@ -422,7 +428,11 @@ class SigKernel:
         return mean_xx + mean_yy - 2.0 * mean_xy
 
     def compute_scoring_rule(
-        self, X: jax.Array, y: jax.Array, max_batch: int = 100
+        self,
+        X: jax.Array,
+        y: jax.Array,
+        max_batch: int = 100,
+        stop_gradient_y: bool = True,
     ) -> jax.Array:
         """
         Input:
@@ -432,6 +442,8 @@ class SigKernel:
             - signature kernel scoring rule S(X,y) = E[k(X,X)] - 2E[k(X,y)]
         """
 
+        if stop_gradient_y:
+            y = jax.lax.stop_gradient(y)
         Xp, yp, scale = self._prepare_inputs(X, y, scale=None)
 
         sum_xx_off, cnt_xx_off = self._kernel_sum_offdiag_symmetric(
@@ -450,7 +462,11 @@ class SigKernel:
         return k_xx_off_mean - 2.0 * k_xy_mean
 
     def compute_expected_scoring_rule(
-        self, X: jax.Array, Y: jax.Array, max_batch: int = 100
+        self,
+        X: jax.Array,
+        Y: jax.Array,
+        max_batch: int = 100,
+        stop_gradient_y: bool = True,
     ) -> jax.Array:
         """
         Input:
@@ -460,6 +476,8 @@ class SigKernel:
             - signature kernel expected scoring rule S(X,Y) = E_Y[S(X,y)]
         """
 
+        if stop_gradient_y:
+            Y = jax.lax.stop_gradient(Y)
         Xp, Yp, scale = self._prepare_inputs(X, Y, scale=None)
 
         sum_xx_off, cnt_xx_off = self._kernel_sum_offdiag_symmetric(
@@ -478,7 +496,11 @@ class SigKernel:
         return k_xx_off_mean - 2.0 * k_xy_mean
 
     def compute_mmd(
-        self, X: jax.Array, Y: jax.Array, max_batch: int = 100
+        self,
+        X: jax.Array,
+        Y: jax.Array,
+        max_batch: int = 100,
+        stop_gradient_y: bool = True,
     ) -> jax.Array:
         """
         Input:
@@ -488,6 +510,8 @@ class SigKernel:
             - scalar: MMD signature distance between samples X and samples Y
         """
 
+        if stop_gradient_y:
+            Y = jax.lax.stop_gradient(Y)
         Xp, Yp, scale = self._prepare_inputs(X, Y, scale=None)
 
         sum_xx_off, cnt_xx_off = self._kernel_sum_offdiag_symmetric(
