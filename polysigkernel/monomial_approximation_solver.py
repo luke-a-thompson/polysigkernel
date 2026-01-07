@@ -309,17 +309,24 @@ class MonomialApproximationSolver:
             .at[..., 0]
             .set(1.0)
         )
-        # diag_solution_minus1 = diag_solution_minus1
 
         dX = X[:, 1:, :] - X[:, :-1, :]
         dY = Y[:, 1:, :] - Y[:, :-1, :]
 
+        # Precompute diagonal axis masks once to avoid redoing the indexing logic
+        # inside the fori_loop (saves host work and tracer construction).
+        p_range = jnp.arange(1, diag_iterations + 1)
+        diag_axis_solution_all, diag_axis_data_all = jax.vmap(
+            lambda p: self._diag_axis_masks(p, length_X, length_Y)
+        )(p_range)
+
         def _loop(p, carry):
             diag_solution_minus1 = carry
+            p_idx = p - 1
 
-            diag_axis_mask_solution, diag_axis_mask_data = self._diag_axis_masks(
-                p, length_X, length_Y
-            )
+            diag_axis_mask_solution = diag_axis_solution_all[p_idx]
+            diag_axis_mask_data = diag_axis_data_all[p_idx]
+
             if self._static_ker == "linear":
                 if self._use_linear_fastpath:
                     diag_data = self._get_diag_data_linear(
