@@ -181,8 +181,10 @@ class MonomialApproximationSolver:
     # Main solvers
     ########################################################################
 
-    @partial(jax.jit, static_argnums=(0,3))
-    def _solve(self, X : jnp.ndarray, Y : jnp.ndarray, sym : bool = False) -> jnp.ndarray:
+    @partial(jax.jit, static_argnums=(0, 3, 4))
+    def _solve(
+        self, X: jnp.ndarray, Y: jnp.ndarray, sym: bool = False, checkpoint: bool = False
+    ) -> jnp.ndarray:
         """
         The core solver method, which iterates over diagonals.
 
@@ -219,8 +221,12 @@ class MonomialApproximationSolver:
                                                        sym) 
 
             return diag_solution
+
+        loop_body = jax.checkpoint(_loop) if checkpoint else _loop
         
-        diag_solutions = jax.lax.fori_loop(1, diag_iterations+1, _loop, (diag_solution_minus1))
+        diag_solutions = jax.lax.fori_loop(
+            1, diag_iterations + 1, loop_body, (diag_solution_minus1)
+        )
 
         solution = jnp.mean(jnp.sum(diag_solutions[:,:,-2:,:], axis=-1), axis=-1)
 
@@ -230,12 +236,13 @@ class MonomialApproximationSolver:
             return solution
 
     
-    @partial(jax.jit, static_argnums=(0,3,4))
+    @partial(jax.jit, static_argnums=(0, 3, 4, 5))
     def solve(self, 
               X: jnp.ndarray, 
               Y: jnp.ndarray, 
               sym : bool = False,
-              multi_gpu : bool = False) -> jnp.ndarray:
+              multi_gpu : bool = False,
+              checkpoint: bool = False) -> jnp.ndarray:
         """
         Allows for multi-GPU parallelisation of the solver.
         """
@@ -249,7 +256,7 @@ class MonomialApproximationSolver:
         # If only one GPU or no GPU is available, or multi_gpu is False, 
         # just run the single-device solver
         if (num_gpus <= 1) or (not multi_gpu):
-            return self._solve(X, Y, sym)
+            return self._solve(X, Y, sym, checkpoint)
 
         # Find the largest integer "num_parallel" <= "total" that is divisible by num_gpus
         total        = X.shape[0]
@@ -259,7 +266,9 @@ class MonomialApproximationSolver:
         # Parallise solver across GPUs
         X_parallel = X[:num_parallel]
         X_sub_tensors = jnp.stack(jnp.array_split(X_parallel, num_gpus))
-        Z_sub_tensors = jax.pmap(self._solve, in_axes=(0, None))(X_sub_tensors, Y)
+        # Note: checkpointing is disabled in the multi-GPU path for simplicity.
+        solve_pmap = lambda x, y: self._solve(x, y, sym, False)
+        Z_sub_tensors = jax.pmap(solve_pmap, in_axes=(0, None))(X_sub_tensors, Y)
         Z = jnp.concatenate(Z_sub_tensors, axis=0)
 
         # If all the data has been used just return it

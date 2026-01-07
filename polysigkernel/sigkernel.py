@@ -264,13 +264,45 @@ class SigKernel:
         Returns (sum, count) where count == batch_X * batch_Y.
         """
         solver = self._get_solver_instance(scale)
-        solve_fn = (
-            jax.checkpoint(
-                lambda a, b: solver.solve(a, b, sym=False, multi_gpu=self.multi_gpu)
-            )
-            if self.checkpoint_solve
-            else (lambda a, b: solver.solve(a, b, sym=False, multi_gpu=self.multi_gpu))
-        )
+
+        def solve_fn(a: jax.Array, b: jax.Array) -> jax.Array:
+            if not self.checkpoint_solve:
+                return solver.solve(
+                    a, b, sym=False, multi_gpu=self.multi_gpu, checkpoint=False
+                )
+
+            # Backward-only checkpointing: forward runs without remat; backward uses remat.
+            @jax.custom_vjp
+            def solve_x(x: jax.Array, y: jax.Array) -> jax.Array:
+                return solver.solve(
+                    x, y, sym=False, multi_gpu=self.multi_gpu, checkpoint=False
+                )
+
+            def fwd(
+                x: jax.Array, y: jax.Array
+            ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
+                out = solver.solve(
+                    x, y, sym=False, multi_gpu=self.multi_gpu, checkpoint=False
+                )
+                return out, (x, y)
+
+            def bwd(
+                res: tuple[jax.Array, jax.Array], g: jax.Array
+            ) -> tuple[jax.Array, jax.Array]:
+                x, y = res
+
+                def solve_bwd(xx: jax.Array) -> jax.Array:
+                    return solver.solve(
+                        xx, y, sym=False, multi_gpu=self.multi_gpu, checkpoint=True
+                    )
+
+                _, vjp_fun = jax.vjp(solve_bwd, x)
+                (dx,) = vjp_fun(g)
+                dy = jnp.zeros_like(y)
+                return dx, dy
+
+            solve_x.defvjp(fwd, bwd)
+            return solve_x(a, b)
 
         Xp, n_x, n_x_blocks = self._pad_to_multiple(X, block_size=max_batch)
         Yp, n_y, n_y_blocks = self._pad_to_multiple(Y, block_size=max_batch)
@@ -327,13 +359,45 @@ class SigKernel:
         Returns (sum_offdiag, count_offdiag) where count_offdiag == n*(n-1).
         """
         solver = self._get_solver_instance(scale)
-        solve_fn = (
-            jax.checkpoint(
-                lambda a, b: solver.solve(a, b, sym=False, multi_gpu=self.multi_gpu)
-            )
-            if self.checkpoint_solve
-            else (lambda a, b: solver.solve(a, b, sym=False, multi_gpu=self.multi_gpu))
-        )
+
+        def solve_fn(a: jax.Array, b: jax.Array) -> jax.Array:
+            if not self.checkpoint_solve:
+                return solver.solve(
+                    a, b, sym=False, multi_gpu=self.multi_gpu, checkpoint=False
+                )
+
+            @jax.custom_vjp
+            def solve_x(x: jax.Array, y: jax.Array) -> jax.Array:
+                return solver.solve(
+                    x, y, sym=False, multi_gpu=self.multi_gpu, checkpoint=False
+                )
+
+            def fwd(
+                x: jax.Array, y: jax.Array
+            ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
+                out = solver.solve(
+                    x, y, sym=False, multi_gpu=self.multi_gpu, checkpoint=False
+                )
+                return out, (x, y)
+
+            def bwd(
+                res: tuple[jax.Array, jax.Array], g: jax.Array
+            ) -> tuple[jax.Array, jax.Array]:
+                x, y = res
+
+                def solve_bwd(xx: jax.Array) -> jax.Array:
+                    return solver.solve(
+                        xx, y, sym=False, multi_gpu=self.multi_gpu, checkpoint=True
+                    )
+
+                _, vjp_fun = jax.vjp(solve_bwd, x)
+                (dx,) = vjp_fun(g)
+                dy = jnp.zeros_like(y)
+                return dx, dy
+
+            solve_x.defvjp(fwd, bwd)
+            return solve_x(a, b)
+
         Xp, n_x, n_blocks = self._pad_to_multiple(X, block_size=max_batch)
 
         B = int(max_batch)
