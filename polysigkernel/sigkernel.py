@@ -30,6 +30,7 @@ class SigKernel:
         add_time: bool = False,
         interpolation: str = "linear",
         multi_gpu: bool = False,
+        checkpoint_solve: bool = True,
     ):
         _check_positive_integer(order, "order")
         _check_positive_integer(refinement_factor, "refinement_factor")
@@ -54,6 +55,7 @@ class SigKernel:
         self.refinement_factor = refinement_factor
         self.interpolation = interpolation
         self.multi_gpu = multi_gpu
+        self.checkpoint_solve = checkpoint_solve
 
         self.scale = scale
 
@@ -68,6 +70,12 @@ class SigKernel:
         self._solver_cache: dict[
             float, MonomialApproximationSolver | MonomialInterpolationSolver
         ] = {}
+
+        # Eagerly construct the default solver so JIT/grad traces don't try to
+        # instantiate Python objects (which can leak tracers).
+        self._solver_cache[float(self.scale)] = self.solver(
+            static_ker=self.static_kernel, scale=float(self.scale), order=self.order
+        )
 
     @partial(jax.jit, static_argnums=(0, 3, 4, 5))
     def kernel_matrix(
@@ -128,9 +136,8 @@ class SigKernel:
 
         # If no splitting is necessary (or no max_batch is provided):
         if (max_batch is None) or (batch_X <= max_batch and batch_Y <= max_batch):
-            return self.solver(
-                static_ker=self.static_kernel, scale=scale, order=self.order
-            ).solve(X, Y, sym, self.multi_gpu)
+            solver = self._get_solver_instance(float(scale))
+            return solver.solve(X, Y, sym, self.multi_gpu)
 
         # Case 1: X small enough, Y large
         elif batch_X <= max_batch and batch_Y > max_batch:
@@ -257,6 +264,13 @@ class SigKernel:
         Returns (sum, count) where count == batch_X * batch_Y.
         """
         solver = self._get_solver_instance(scale)
+        solve_fn = (
+            jax.checkpoint(
+                lambda a, b: solver.solve(a, b, sym=False, multi_gpu=self.multi_gpu)
+            )
+            if self.checkpoint_solve
+            else (lambda a, b: solver.solve(a, b, sym=False, multi_gpu=self.multi_gpu))
+        )
 
         Xp, n_x, n_x_blocks = self._pad_to_multiple(X, block_size=max_batch)
         Yp, n_y, n_y_blocks = self._pad_to_multiple(Y, block_size=max_batch)
@@ -282,7 +296,7 @@ class SigKernel:
             Xi = jax.lax.dynamic_slice(Xp, (i * B, 0, 0), (B, t_x, d_x))
             Yj = jax.lax.dynamic_slice(Yp, (j * B, 0, 0), (B, t_y, d_y))
 
-            K = solver.solve(Xi, Yj, sym=False, multi_gpu=self.multi_gpu)
+            K = solve_fn(Xi, Yj)
 
             idx_x = jnp.arange(B) + (i * B)
             idx_y = jnp.arange(B) + (j * B)
@@ -313,6 +327,13 @@ class SigKernel:
         Returns (sum_offdiag, count_offdiag) where count_offdiag == n*(n-1).
         """
         solver = self._get_solver_instance(scale)
+        solve_fn = (
+            jax.checkpoint(
+                lambda a, b: solver.solve(a, b, sym=False, multi_gpu=self.multi_gpu)
+            )
+            if self.checkpoint_solve
+            else (lambda a, b: solver.solve(a, b, sym=False, multi_gpu=self.multi_gpu))
+        )
         Xp, n_x, n_blocks = self._pad_to_multiple(X, block_size=max_batch)
 
         B = int(max_batch)
@@ -340,7 +361,7 @@ class SigKernel:
                     idx_j = jnp.arange(B) + (j * B)
                     mask_j = idx_j < n_x
 
-                    K = solver.solve(Xi, Xj, sym=False, multi_gpu=self.multi_gpu)
+                    K = solve_fn(Xi, Xj)
                     mask_pairs = mask_i[:, None] & mask_j[None, :]
 
                     def diag_case(
