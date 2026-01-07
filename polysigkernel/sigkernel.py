@@ -31,6 +31,7 @@ class SigKernel:
         interpolation: str = "linear",
         multi_gpu: bool = False,
         checkpoint_solve: bool = True,
+        linear_fastpath: bool = True,
     ):
         _check_positive_integer(order, "order")
         _check_positive_integer(refinement_factor, "refinement_factor")
@@ -56,6 +57,7 @@ class SigKernel:
         self.interpolation = interpolation
         self.multi_gpu = multi_gpu
         self.checkpoint_solve = checkpoint_solve
+        self.linear_fastpath = linear_fastpath
 
         self.scale = scale
 
@@ -68,14 +70,23 @@ class SigKernel:
         # Cache solver instances keyed by (python) scale for repeated block solves.
         # This avoids re-allocating solver utility matrices for every block.
         self._solver_cache: dict[
-            float, MonomialApproximationSolver | MonomialInterpolationSolver
+            float,
+            MonomialApproximationSolver | MonomialInterpolationSolver,
         ] = {}
 
         # Eagerly construct the default solver so JIT/grad traces don't try to
         # instantiate Python objects (which can leak tracers).
-        self._solver_cache[float(self.scale)] = self.solver(
-            static_ker=self.static_kernel, scale=float(self.scale), order=self.order
-        )
+        if self.solver is MonomialApproximationSolver:
+            self._solver_cache[float(self.scale)] = self.solver(
+                static_ker=self.static_kernel,
+                scale=float(self.scale),
+                order=self.order,
+                use_linear_fastpath=self.linear_fastpath,
+            )
+        else:
+            self._solver_cache[float(self.scale)] = self.solver(
+                static_ker=self.static_kernel, scale=float(self.scale), order=self.order
+            )
 
     @partial(jax.jit, static_argnums=(0, 3, 4, 5))
     def kernel_matrix(
@@ -187,9 +198,17 @@ class SigKernel:
     ) -> MonomialApproximationSolver | MonomialInterpolationSolver:
         cached = self._solver_cache.get(scale)
         if cached is None:
-            cached = self.solver(
-                static_ker=self.static_kernel, scale=scale, order=self.order
-            )
+            if self.solver is MonomialApproximationSolver:
+                cached = self.solver(
+                    static_ker=self.static_kernel,
+                    scale=scale,
+                    order=self.order,
+                    use_linear_fastpath=self.linear_fastpath,
+                )
+            else:
+                cached = self.solver(
+                    static_ker=self.static_kernel, scale=scale, order=self.order
+                )
             self._solver_cache[scale] = cached
         return cached
 

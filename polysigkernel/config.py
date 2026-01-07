@@ -1,7 +1,5 @@
+_SOLVERS = ["monomial_approx", "monomial_interp"]
 
-_SOLVERS = ['monomial_approx', 'monomial_interp']
+_KERNELS = ["linear", "rbf"]
 
-_KERNELS = ['linear', 'rbf']
-
-_INTERPOLATIONS = ['linear']
-
+_INTERPOLATIONS = ["linear"]
