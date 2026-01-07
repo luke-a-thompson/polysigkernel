@@ -225,10 +225,24 @@ class SigKernel:
         return X, Y, scale_f
 
     @staticmethod
-    def _split_blocks(Z: jax.Array, max_batch: int) -> list[jax.Array]:
-        if max_batch <= 0:
+    def _pad_to_multiple(Z: jax.Array, block_size: int) -> tuple[jax.Array, int, int]:
+        """
+        Pad the batch dimension of Z to a multiple of block_size with zeros.
+        Returns (Z_padded, n_original, n_blocks).
+        """
+        if block_size <= 0:
             raise ValueError("max_batch must be a positive integer.")
-        return [Z[i : i + max_batch] for i in range(0, Z.shape[0], max_batch)]
+        n = int(Z.shape[0])
+        n_blocks = (n + block_size - 1) // block_size
+        n_pad = n_blocks * block_size - n
+        if n_pad == 0:
+            return Z, n, n_blocks
+        pad_width = ((0, n_pad), (0, 0), (0, 0))
+        return (
+            jnp.pad(Z, pad_width=pad_width, mode="constant", constant_values=0.0),
+            n,
+            n_blocks,
+        )
 
     def _kernel_sum_all(
         self,
@@ -237,22 +251,54 @@ class SigKernel:
         *,
         scale: float,
         max_batch: int,
-    ) -> tuple[jax.Array, int]:
+    ) -> tuple[jax.Array, jax.Array]:
         """
         Compute sum_{i,j} k(X_i, Y_j) without materializing the full matrix.
         Returns (sum, count) where count == batch_X * batch_Y.
         """
         solver = self._get_solver_instance(scale)
-        X_blocks = self._split_blocks(X, max_batch=max_batch)
-        Y_blocks = self._split_blocks(Y, max_batch=max_batch)
 
-        total = jnp.array(0.0, dtype=X.dtype)
-        count = 0
-        for Xb in X_blocks:
-            for Yb in Y_blocks:
-                K = solver.solve(Xb, Yb, sym=False, multi_gpu=self.multi_gpu)
-                total = total + jnp.sum(K)
-                count += int(Xb.shape[0]) * int(Yb.shape[0])
+        Xp, n_x, n_x_blocks = self._pad_to_multiple(X, block_size=max_batch)
+        Yp, n_y, n_y_blocks = self._pad_to_multiple(Y, block_size=max_batch)
+
+        B = int(max_batch)
+        t_x, d_x = int(Xp.shape[1]), int(Xp.shape[2])
+        t_y, d_y = int(Yp.shape[1]), int(Yp.shape[2])
+
+        if d_x != d_y:
+            raise ValueError("X and Y must have the same channel dimension.")
+        if t_x != t_y:
+            raise ValueError(
+                "X and Y must have the same time length for this solver configuration."
+            )
+
+        def body(
+            k: int, carry: tuple[jax.Array, jax.Array]
+        ) -> tuple[jax.Array, jax.Array]:
+            total, count = carry
+            i = k // n_y_blocks
+            j = k - i * n_y_blocks
+
+            Xi = jax.lax.dynamic_slice(Xp, (i * B, 0, 0), (B, t_x, d_x))
+            Yj = jax.lax.dynamic_slice(Yp, (j * B, 0, 0), (B, t_y, d_y))
+
+            K = solver.solve(Xi, Yj, sym=False, multi_gpu=self.multi_gpu)
+
+            idx_x = jnp.arange(B) + (i * B)
+            idx_y = jnp.arange(B) + (j * B)
+            mask_x = idx_x < n_x
+            mask_y = idx_y < n_y
+            mask = mask_x[:, None] & mask_y[None, :]
+
+            total = total + jnp.sum(K * mask.astype(K.dtype))
+            count = count + jnp.sum(mask.astype(jnp.int32))
+            return total, count
+
+        init_total = jnp.array(0.0, dtype=X.dtype)
+        init_count = jnp.array(0, dtype=jnp.int32)
+        total, count = jax.lax.fori_loop(
+            0, n_x_blocks * n_y_blocks, body, (init_total, init_count)
+        )
         return total, count
 
     def _kernel_sum_offdiag_symmetric(
@@ -261,30 +307,75 @@ class SigKernel:
         *,
         scale: float,
         max_batch: int,
-    ) -> tuple[jax.Array, int]:
+    ) -> tuple[jax.Array, jax.Array]:
         """
         Compute sum_{i!=j} k(X_i, X_j) without materializing the full matrix.
         Returns (sum_offdiag, count_offdiag) where count_offdiag == n*(n-1).
         """
         solver = self._get_solver_instance(scale)
-        blocks = self._split_blocks(X, max_batch=max_batch)
+        Xp, n_x, n_blocks = self._pad_to_multiple(X, block_size=max_batch)
 
-        total = jnp.array(0.0, dtype=X.dtype)
-        count = 0
-        for i, Xi in enumerate(blocks):
-            # Diagonal block: subtract diagonal entries to get off-diagonal contribution.
-            Kii = solver.solve(Xi, Xi, sym=False, multi_gpu=self.multi_gpu)
-            total = total + (jnp.sum(Kii) - jnp.sum(jnp.diag(Kii)))
-            count += int(Xi.shape[0]) * int(Xi.shape[0] - 1)
+        B = int(max_batch)
+        t_x, d_x = int(Xp.shape[1]), int(Xp.shape[2])
+        eye = jnp.eye(B, dtype=bool)
 
-            # Upper triangle blocks: compute once, multiply by 2 to account for (i,j) and (j,i).
-            for j in range(i + 1, len(blocks)):
-                Xj = blocks[j]
-                Kij = solver.solve(Xi, Xj, sym=False, multi_gpu=self.multi_gpu)
-                s = jnp.sum(Kij)
-                total = total + (2.0 * s)
-                count += 2 * int(Xi.shape[0]) * int(Xj.shape[0])
+        def body_i(
+            i: int, carry: tuple[jax.Array, jax.Array]
+        ) -> tuple[jax.Array, jax.Array]:
+            total, count = carry
 
+            Xi = jax.lax.dynamic_slice(Xp, (i * B, 0, 0), (B, t_x, d_x))
+            idx_i = jnp.arange(B) + (i * B)
+            mask_i = idx_i < n_x
+
+            def body_j(
+                j: int, inner: tuple[jax.Array, jax.Array]
+            ) -> tuple[jax.Array, jax.Array]:
+                total2, count2 = inner
+
+                def do_block(
+                    _: tuple[jax.Array, jax.Array],
+                ) -> tuple[jax.Array, jax.Array]:
+                    Xj = jax.lax.dynamic_slice(Xp, (j * B, 0, 0), (B, t_x, d_x))
+                    idx_j = jnp.arange(B) + (j * B)
+                    mask_j = idx_j < n_x
+
+                    K = solver.solve(Xi, Xj, sym=False, multi_gpu=self.multi_gpu)
+                    mask_pairs = mask_i[:, None] & mask_j[None, :]
+
+                    def diag_case(
+                        __: tuple[jax.Array, jax.Array],
+                    ) -> tuple[jax.Array, jax.Array]:
+                        diag_mask = eye & (mask_i[:, None] & mask_i[None, :])
+                        off_mask = mask_pairs & (~diag_mask)
+                        total3 = total2 + jnp.sum(K * off_mask.astype(K.dtype))
+                        count3 = count2 + jnp.sum(off_mask.astype(jnp.int32))
+                        return total3, count3
+
+                    def off_case(
+                        __: tuple[jax.Array, jax.Array],
+                    ) -> tuple[jax.Array, jax.Array]:
+                        s = jnp.sum(K * mask_pairs.astype(K.dtype))
+                        total3 = total2 + (2.0 * s)
+                        count3 = count2 + (2 * jnp.sum(mask_pairs.astype(jnp.int32)))
+                        return total3, count3
+
+                    return jax.lax.cond(
+                        i == j, diag_case, off_case, operand=(total2, count2)
+                    )
+
+                return jax.lax.cond(
+                    j < i,
+                    lambda _: (total2, count2),
+                    do_block,
+                    operand=(total2, count2),
+                )
+
+            return jax.lax.fori_loop(0, n_blocks, body_j, (total, count))
+
+        init_total = jnp.array(0.0, dtype=X.dtype)
+        init_count = jnp.array(0, dtype=jnp.int32)
+        total, count = jax.lax.fori_loop(0, n_blocks, body_i, (init_total, init_count))
         return total, count
 
     def compute_distance(
@@ -303,9 +394,9 @@ class SigKernel:
         sum_yy, cnt_yy = self._kernel_sum_all(Yp, Yp, scale=scale, max_batch=max_batch)
         sum_xy, cnt_xy = self._kernel_sum_all(Xp, Yp, scale=scale, max_batch=max_batch)
 
-        mean_xx = sum_xx / jnp.array(max(cnt_xx, 1), dtype=Xp.dtype)
-        mean_yy = sum_yy / jnp.array(max(cnt_yy, 1), dtype=Yp.dtype)
-        mean_xy = sum_xy / jnp.array(max(cnt_xy, 1), dtype=Xp.dtype)
+        mean_xx = sum_xx / jnp.maximum(cnt_xx, 1).astype(Xp.dtype)
+        mean_yy = sum_yy / jnp.maximum(cnt_yy, 1).astype(Yp.dtype)
+        mean_xy = sum_xy / jnp.maximum(cnt_xy, 1).astype(Xp.dtype)
 
         return mean_xx + mean_yy - 2.0 * mean_xy
 
@@ -327,12 +418,14 @@ class SigKernel:
         )
         sum_xy, cnt_xy = self._kernel_sum_all(Xp, yp, scale=scale, max_batch=max_batch)
 
-        if cnt_xx_off == 0:
-            k_xx_off_mean = jnp.array(0.0, dtype=Xp.dtype)
-        else:
-            k_xx_off_mean = sum_xx_off / jnp.array(cnt_xx_off, dtype=Xp.dtype)
+        k_xx_off_mean = jax.lax.cond(
+            cnt_xx_off == 0,
+            lambda _: jnp.array(0.0, dtype=Xp.dtype),
+            lambda _: sum_xx_off / cnt_xx_off.astype(Xp.dtype),
+            operand=0,
+        )
 
-        k_xy_mean = sum_xy / jnp.array(max(cnt_xy, 1), dtype=Xp.dtype)
+        k_xy_mean = sum_xy / jnp.maximum(cnt_xy, 1).astype(Xp.dtype)
         return k_xx_off_mean - 2.0 * k_xy_mean
 
     def compute_expected_scoring_rule(
@@ -353,12 +446,14 @@ class SigKernel:
         )
         sum_xy, cnt_xy = self._kernel_sum_all(Xp, Yp, scale=scale, max_batch=max_batch)
 
-        if cnt_xx_off == 0:
-            k_xx_off_mean = jnp.array(0.0, dtype=Xp.dtype)
-        else:
-            k_xx_off_mean = sum_xx_off / jnp.array(cnt_xx_off, dtype=Xp.dtype)
+        k_xx_off_mean = jax.lax.cond(
+            cnt_xx_off == 0,
+            lambda _: jnp.array(0.0, dtype=Xp.dtype),
+            lambda _: sum_xx_off / cnt_xx_off.astype(Xp.dtype),
+            operand=0,
+        )
 
-        k_xy_mean = sum_xy / jnp.array(max(cnt_xy, 1), dtype=Xp.dtype)
+        k_xy_mean = sum_xy / jnp.maximum(cnt_xy, 1).astype(Xp.dtype)
         return k_xx_off_mean - 2.0 * k_xy_mean
 
     def compute_mmd(
@@ -382,17 +477,21 @@ class SigKernel:
         )
         sum_xy, cnt_xy = self._kernel_sum_all(Xp, Yp, scale=scale, max_batch=max_batch)
 
-        if cnt_xx_off == 0:
-            k_xx_off_mean = jnp.array(0.0, dtype=Xp.dtype)
-        else:
-            k_xx_off_mean = sum_xx_off / jnp.array(cnt_xx_off, dtype=Xp.dtype)
+        k_xx_off_mean = jax.lax.cond(
+            cnt_xx_off == 0,
+            lambda _: jnp.array(0.0, dtype=Xp.dtype),
+            lambda _: sum_xx_off / cnt_xx_off.astype(Xp.dtype),
+            operand=0,
+        )
 
-        if cnt_yy_off == 0:
-            k_yy_off_mean = jnp.array(0.0, dtype=Yp.dtype)
-        else:
-            k_yy_off_mean = sum_yy_off / jnp.array(cnt_yy_off, dtype=Yp.dtype)
+        k_yy_off_mean = jax.lax.cond(
+            cnt_yy_off == 0,
+            lambda _: jnp.array(0.0, dtype=Yp.dtype),
+            lambda _: sum_yy_off / cnt_yy_off.astype(Yp.dtype),
+            operand=0,
+        )
 
-        k_xy_mean = sum_xy / jnp.array(max(cnt_xy, 1), dtype=Xp.dtype)
+        k_xy_mean = sum_xy / jnp.maximum(cnt_xy, 1).astype(Xp.dtype)
         return k_xx_off_mean + k_yy_off_mean - 2.0 * k_xy_mean
 
 
