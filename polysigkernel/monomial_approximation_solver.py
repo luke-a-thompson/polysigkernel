@@ -19,6 +19,8 @@ class MonomialApproximationSolver:
                  order : int = 4):
         
         self.order = order
+        self.static_ker = static_ker
+        self.scale = scale
 
         # Precompute utility matrices (mat1 and mat2) used for monomial-based updates.
         self.mat1, self.mat2 = self._compute_utils(order)
@@ -95,6 +97,22 @@ class MonomialApproximationSolver:
         idx2 = k-1
         idx_data = (k + 1) // 2 - 1
         return idx1, idx2, idx_data
+
+    def _direct_mat1_update(self, prev_bd: jnp.ndarray, ker: jax.Array) -> jnp.ndarray:
+        prev_tail = prev_bd[1:-1]
+
+        if self.order <= 1:
+            return jnp.empty((0,), dtype=prev_bd.dtype)
+
+        tail_update = []
+        for row in range(self.order - 1):
+            coeffs = self.mat1[row, :row + 1] * prev_tail[:row + 1]
+            acc = coeffs[0]
+            for coeff in coeffs[1:]:
+                acc = acc * ker + coeff
+            tail_update.append(acc * ker)
+
+        return jnp.stack(tail_update)
     
 
     ########################################################################
@@ -102,12 +120,12 @@ class MonomialApproximationSolver:
     ########################################################################
 
     @partial(jax.jit, static_argnums=(0, 5))
-    def _get_diag_data(self, 
-                       p: int, 
-                       diag_axis_masked: jnp.ndarray, 
-                       X: jnp.ndarray, 
-                       Y: jnp.ndarray,
-                       sym : bool = False) -> jnp.ndarray:
+    def _get_diag_data_generic(self,
+                               p: int,
+                               diag_axis_masked: jnp.ndarray,
+                               X: jnp.ndarray,
+                               Y: jnp.ndarray,
+                               sym : bool = False) -> jnp.ndarray:
         
         def _get_kernel(i : int, j : int, k : int):
             if sym:
@@ -122,6 +140,36 @@ class MonomialApproximationSolver:
                  in_axes=(None, 0, None)),
                 in_axes=(0, None, None)
                )(jnp.arange(X.shape[0]), jnp.arange(Y.shape[0]), diag_axis_masked)
+
+    @partial(jax.jit, static_argnums=(0, 5))
+    def _get_diag_data(self, 
+                       p: int, 
+                       diag_axis_masked: jnp.ndarray, 
+                       X: jnp.ndarray, 
+                       Y: jnp.ndarray,
+                       sym : bool = False) -> jnp.ndarray:
+
+        if self.static_ker != 'linear':
+            return self._get_diag_data_generic(p, diag_axis_masked, X, Y, sym)
+
+        valid_mask = diag_axis_masked != -1
+        x_idx = jnp.where(valid_mask, diag_axis_masked, 0)
+        y_idx = jnp.where(valid_mask, p - diag_axis_masked - 1, 0)
+
+        dX = X[:, 1:] - X[:, :-1]
+        dY = Y[:, 1:] - Y[:, :-1]
+
+        dX_diag = jnp.take(dX, x_idx, axis=1)
+        dY_diag = jnp.take(dY, y_idx, axis=1)
+
+        diag_data = (self.scale ** 2) * jnp.einsum('xkc,ykc->xyk', dX_diag, dY_diag)
+        diag_data = diag_data * valid_mask[None, None, :].astype(X.dtype)
+
+        if sym:
+            lower_tri_mask = jnp.arange(X.shape[0])[:, None] >= jnp.arange(Y.shape[0])[None, :]
+            diag_data = diag_data * lower_tri_mask[..., None].astype(X.dtype)
+
+        return diag_data
     
 
     ########################################################################
@@ -139,7 +187,6 @@ class MonomialApproximationSolver:
         Given the data kernel evaluations for the current diagonal, update the solution 
         along that diagonal.
         """
-        mat1 = self.mat1
         mat2 = self.mat2
 
         ic = self._initial_conditions(self.order, diag_data.dtype)
@@ -154,11 +201,10 @@ class MonomialApproximationSolver:
             ker              = diag_data[i, j, idx_data]                     
 
             ker_powers = jnp.power(ker, jnp.arange(1,self.order+1))
-            ker_powers_reversed = jnp.tril(jax.scipy.linalg.toeplitz(ker_powers[:-1]))  
 
             new_bc = prev_bd.at[0].set(jnp.sum(prev_bd_opposite))
             new_bc = new_bc.at[1:].add(jnp.dot(mat2, prev_bd_opposite) * ker_powers)
-            new_bc = new_bc.at[2:].add(jnp.dot(mat1 * ker_powers_reversed, prev_bd[1:-1]))
+            new_bc = new_bc.at[2:].add(self._direct_mat1_update(prev_bd, ker))
 
             # If sym=True, only update when i >= j.
             if sym:
