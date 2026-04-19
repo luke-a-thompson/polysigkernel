@@ -263,8 +263,10 @@ if __name__ == "__main__":
                             add_time=False,
                             solver=solver,
                         )
+
                         def sigkernel_poly():
                             return sk.kernel_matrix(X, Y)
+
                         time_elapsed = timer_func(sigkernel_poly)
 
                         df.loc[len(df.index)] = [
@@ -324,8 +326,10 @@ if __name__ == "__main__":
                             static_kernel_kind="linear",
                             add_time=False,
                         )
+
                         def sigkernel_sigkerax():
                             return sk.kernel_matrix(X, Y)[..., 0]
+
                         time_elapsed = timer_func(sigkernel_sigkerax)
 
                         df.loc[len(df.index)] = [

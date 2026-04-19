@@ -153,13 +153,15 @@ if __name__ == "__main__":
                     # Compute polynomial signature kernel
                     orders = tqdm(_orders, position=1, leave=False)
                     for order in orders:
+
                         def sigkernel_poly():
                             return SigKernel_polynomial(
-                                                    order=order,
-                                                    static_kernel="linear",
-                                                    solver=solver,
-                                                    add_time=False,
-                                                ).kernel_matrix(X, Y)
+                                order=order,
+                                static_kernel="linear",
+                                solver=solver,
+                                add_time=False,
+                            ).kernel_matrix(X, Y)
+
                         time_elapsed = timer_func(sigkernel_poly)
 
                         df.loc[len(df.index)] = [
@@ -178,8 +180,8 @@ if __name__ == "__main__":
                 # Compute sigkerax kernel
                 def sigkernel_sigkerax():
                     return SigKernel_sigkerax(
-                                    refinement_factor=1, static_kernel_kind="linear", add_time=False
-                                ).kernel_matrix(X, Y)[..., 0]
+                        refinement_factor=1, static_kernel_kind="linear", add_time=False
+                    ).kernel_matrix(X, Y)[..., 0]
 
                 time_elapsed = timer_func(sigkernel_sigkerax)
 
@@ -221,13 +223,14 @@ if __name__ == "__main__":
                     # Compute polynomial signature kernel
                     orders = tqdm(_orders, position=1, leave=False)
                     for order in orders:
+
                         def sigkernel_poly():
                             return SigKernel_polynomial(
-                                                    order=order,
-                                                    static_kernel="linear",
-                                                    solver=solver,
-                                                    add_time=False,
-                                                ).kernel_matrix(X, Y)
+                                order=order,
+                                static_kernel="linear",
+                                solver=solver,
+                                add_time=False,
+                            ).kernel_matrix(X, Y)
 
                         time_elapsed = timer_func(sigkernel_poly)
 
@@ -247,12 +250,13 @@ if __name__ == "__main__":
                 # Compute sigkerax kernel with sigkerax
                 refinement_factors = tqdm(_refinement_factors, position=1, leave=False)
                 for refinement_factor in refinement_factors:
+
                     def sigkernel_sigkerax():
                         return SigKernel_sigkerax(
-                                            refinement_factor=refinement_factor,
-                                            static_kernel_kind="linear",
-                                            add_time=False,
-                                        ).kernel_matrix(X, Y)[..., 0]
+                            refinement_factor=refinement_factor,
+                            static_kernel_kind="linear",
+                            add_time=False,
+                        ).kernel_matrix(X, Y)[..., 0]
 
                     time_elapsed = timer_func(sigkernel_sigkerax)
 
@@ -298,13 +302,14 @@ if __name__ == "__main__":
                 # Compute polynomial signature kernel with monomial_approx
                 orders = tqdm(_orders1, position=0, leave=True)
                 for order in orders:
+
                     def sigkernel_poly():
                         return SigKernel_polynomial(
-                                            order=order,
-                                            static_kernel="linear",
-                                            solver=solver,
-                                            add_time=False,
-                                        ).kernel_matrix(X, Y)
+                            order=order,
+                            static_kernel="linear",
+                            solver=solver,
+                            add_time=False,
+                        ).kernel_matrix(X, Y)
 
                     time_elapsed = timer_func(sigkernel_poly)
 
@@ -326,12 +331,13 @@ if __name__ == "__main__":
             # Compute sigkerax kernel with sigkerax
             refinement_factors = tqdm(_refinement_factors1, position=0, leave=False)
             for refinement_factor in refinement_factors:
+
                 def sigkernel_sigkerax():
                     return SigKernel_sigkerax(
-                                    refinement_factor=refinement_factor,
-                                    static_kernel_kind="linear",
-                                    add_time=False,
-                                ).kernel_matrix(X, Y)[..., 0]
+                        refinement_factor=refinement_factor,
+                        static_kernel_kind="linear",
+                        add_time=False,
+                    ).kernel_matrix(X, Y)[..., 0]
 
                 time_elapsed = timer_func(sigkernel_sigkerax)
 

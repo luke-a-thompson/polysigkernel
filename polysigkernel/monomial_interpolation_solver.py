@@ -22,7 +22,12 @@ class MonomialInterpolationSolver:
         order (int, optional)      : Interpolation order. Defaults to 4.
     """
 
-    def __init__(self, static_ker: StaticKernelType = "linear", scale: float = 1.0, order: int = 4):
+    def __init__(
+        self,
+        static_ker: StaticKernelType = "linear",
+        scale: float = 1.0,
+        order: int = 4,
+    ):
 
         self.deg = order
 

@@ -17,7 +17,12 @@ class MonomialApproximationSolver:
         order (int, optional)      : Monomial expansion order. Defaults to 4.
     """
 
-    def __init__(self, static_ker: StaticKernelType = "linear", scale: float = 1.0, order: int = 4):
+    def __init__(
+        self,
+        static_ker: StaticKernelType = "linear",
+        scale: float = 1.0,
+        order: int = 4,
+    ):
 
         self.order = order
         self.static_ker = static_ker
