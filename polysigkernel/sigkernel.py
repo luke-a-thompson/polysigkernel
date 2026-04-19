@@ -346,8 +346,12 @@ class SigKernel:
         total = jnp.array(0.0, dtype=X.dtype)
         for _ in range(num_minibatches):
             key, key_x, key_y = jax.random.split(key, 3)
-            x_idx = jax.random.choice(key_x, n_X, shape=(minibatch_size_X,), replace=replace_X)
-            y_idx = jax.random.choice(key_y, n_Y, shape=(minibatch_size_Y,), replace=replace_Y)
+            x_idx = jax.random.choice(
+                key_x, n_X, shape=(minibatch_size_X,), replace=replace_X
+            )
+            y_idx = jax.random.choice(
+                key_y, n_Y, shape=(minibatch_size_Y,), replace=replace_Y
+            )
 
             X_mb = X[x_idx]
             Y_mb = Y[y_idx]
@@ -355,7 +359,9 @@ class SigKernel:
             K_XX_sum, K_XX_diag_sum = self._self_kernel_sums(X_mb, solver, max_batch)
             K_XY_sum = self._cross_kernel_sum(X_mb, Y_mb, solver, max_batch)
 
-            K_XX_m = (K_XX_sum - K_XX_diag_sum) / (minibatch_size_X * (minibatch_size_X - 1.0))
+            K_XX_m = (K_XX_sum - K_XX_diag_sum) / (
+                minibatch_size_X * (minibatch_size_X - 1.0)
+            )
             K_XY_m = K_XY_sum / (minibatch_size_X * minibatch_size_Y)
 
             total = total + K_XX_m - 2.0 * K_XY_m

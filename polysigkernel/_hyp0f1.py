@@ -24,9 +24,11 @@ def _hyp_0f1_serie(a, x):
         serie, k, term = state
         return (k < 250) & (lax.abs(term) / lax.abs(serie) > DOUBLE_PRECISION)
 
-    init = (jnp.asarray(1.0, dtype=x.dtype),
-            jnp.asarray(1, dtype=jnp.int32),
-            x / safe_a)
+    init = (
+        jnp.asarray(1.0, dtype=x.dtype),
+        jnp.asarray(1, dtype=jnp.int32),
+        x / safe_a,
+    )
 
     return lax.while_loop(cond, body, init)[0]
 
