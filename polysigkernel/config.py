@@ -1,7 +1,5 @@
+from typing import Literal
 
-_SOLVERS = ['monomial_approx', 'monomial_interp']
-
-_KERNELS = ['linear', 'rbf']
-
-_INTERPOLATIONS = ['linear']
-
+SolverType = Literal["monomial_approx", "monomial_interp"]
+StaticKernelType = Literal["linear", "rbf"]
+InterpolationType = Literal["linear"]
