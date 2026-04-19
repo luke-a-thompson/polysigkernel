@@ -4,6 +4,7 @@ from functools import partial
 
 from .static_kernels import linear_kernel, rbf_kernel
 from ._hyp0f1 import hyp0f1
+from ._solver_utils import diag_axis_masks, get_idx
 
 
 ## TODO: symmetric not implemented yet
@@ -50,38 +51,9 @@ class MonomialInterpolationSolver:
         return (1 + nodes) / 2
 
     @staticmethod
-    def _diag_axis_masks(p : int, length_X : int, length_Y : int):
-        
-        diag_length_solution = 2 * (length_X - 1) 
-        diag_length_data = length_X - 1
-
-        diag_axis_solution = jnp.arange(diag_length_solution)
-        diag_axis_data = jnp.arange(diag_length_data)
-
-        start_row_solution = jnp.where((p == length_X + length_Y - 3), jnp.maximum(0, 2 * (p - length_Y + 1)), jnp.maximum(0, 2 * (p - length_Y + 2)))
-        end_row_solution = jnp.minimum(diag_length_solution, 2 * p + 2)
-
-        start_row_data = jnp.maximum(0, p - length_Y + 1)
-        end_row_data = jnp.minimum(diag_length_data, p)
-
-        mask_solution = jnp.where((diag_axis_solution >= start_row_solution) & (diag_axis_solution < end_row_solution), diag_axis_solution, -1)
-        mask_data = jnp.where((diag_axis_data >= start_row_data) & (diag_axis_data < end_row_data), diag_axis_data, -1)    
-
-        return jnp.where((p == length_X + length_Y - 3), mask_solution.at[-2:].add(1), mask_solution), mask_data
-    
-
-    @staticmethod
     def _initial_conditions(deg : int, dtype):
         ic = jnp.ones(shape=(deg+1), dtype = dtype)
         return ic
-    
-    @staticmethod
-    def _get_idx(k : int):
-        idx1 = jnp.where(k % 2 ==0, k-2, k)
-        idx2 = k-1
-        idx_data = (k + 1) // 2 - 1
-        return idx1, idx2, idx_data
-    
 
     ########################################################################
     # Diagonal updates
@@ -185,7 +157,7 @@ class MonomialInterpolationSolver:
 
         def _solution_single_update(i : int, j : int, k : int):
 
-            idx1, idx2, idx_data = self._get_idx(k)
+            idx1, idx2, idx_data = get_idx(k)
 
             prev_bd            = diag_solution_minus1[i, j, idx1]          
             prev_bd_opposite   = diag_solution_minus1[i, j, idx2] 
@@ -247,12 +219,12 @@ class MonomialInterpolationSolver:
         diag_solution_minus1 = jnp.zeros(shape=(batch_X, batch_Y, diag_length, self.deg + 1), dtype = X.dtype) 
         diag_solution_minus1 = diag_solution_minus1.at[..., :].set(1.0)
 
-        diag_axis_mask_solution, _ = self._diag_axis_masks(0, length_X, length_Y) # You can brute force the first step and
+        diag_axis_mask_solution, _ = diag_axis_masks(0, length_X, length_Y) # You can brute force the first step and
     
         def _loop(p, carry):
 
             diag_solution_minus1, diag_axis_mask_solution = carry
-            diag_axis_mask_solution_new, diag_axis_mask_data = self._diag_axis_masks(p, length_X, length_Y)
+            diag_axis_mask_solution_new, diag_axis_mask_data = diag_axis_masks(p, length_X, length_Y)
             
             coeff, _hyp0f1, _i0term = self._get_data_and_coeffs(p, 
                                                                 diag_axis_mask_data, 

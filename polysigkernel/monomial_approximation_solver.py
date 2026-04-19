@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from .static_kernels import linear_kernel, rbf_kernel
+from ._solver_utils import diag_axis_masks, get_idx
 
 class MonomialApproximationSolver:
     """
@@ -58,61 +59,43 @@ class MonomialApproximationSolver:
     
 
     @staticmethod
-    def _diag_axis_masks(p : int, length_X : int, length_Y : int):
-        """
-        Generate masks for indexing the diagonal elements in both the solution array 
-        and the data array (which is used to compute the kernel evaluations).
-        """
-        
-        diag_length_solution = 2 * (length_X - 1) 
-        diag_length_data = length_X - 1
-
-        diag_axis_solution = jnp.arange(diag_length_solution)
-        diag_axis_data = jnp.arange(diag_length_data)
-
-        start_row_solution = jnp.where((p == length_X + length_Y - 3), jnp.maximum(0, 2 * (p - length_Y + 1)), jnp.maximum(0, 2 * (p - length_Y + 2)))
-        end_row_solution = jnp.minimum(diag_length_solution, 2 * p + 2)
-
-        start_row_data = jnp.maximum(0, p - length_Y + 1)
-        end_row_data = jnp.minimum(diag_length_data, p)
-
-        mask_solution = jnp.where((diag_axis_solution >= start_row_solution) & (diag_axis_solution < end_row_solution), diag_axis_solution, -1)
-        mask_data = jnp.where((diag_axis_data >= start_row_data) & (diag_axis_data < end_row_data), diag_axis_data, -1)    
-
-        return jnp.where((p == length_X + length_Y - 3), mask_solution.at[-2:].add(1), mask_solution), mask_data
-    
-
-    @staticmethod
     def _initial_conditions(order : int, dtype):
         ic = jnp.zeros(shape=(order+1), dtype = dtype)
         return ic.at[0].set(1.0)
-    
+
     @staticmethod
-    def _get_idx(k : int):
-        """
-        For a given diagonal offset k, compute the indices needed to access 
-        the correct elements from the solution and data arrays.
-        """
-        idx1 = jnp.where(k % 2 ==0, k-2, k)
-        idx2 = k-1
-        idx_data = (k + 1) // 2 - 1
-        return idx1, idx2, idx_data
+    def _active_diag_window(p: int, length_X: int, length_Y: int):
+        diag_length = 2 * (length_X - 1)
+        final_diag = length_X + length_Y - 3
+        is_final = p == final_diag
+
+        first_k = jnp.where(
+            is_final,
+            diag_length - 1,
+            jnp.maximum(0, 2 * (p - length_Y + 2)),
+        )
+        active_len = jnp.where(
+            is_final,
+            2,
+            jnp.minimum(diag_length, 2 * p + 2) - first_k,
+        )
+        return first_k, active_len
 
     def _direct_mat1_update(self, prev_bd: jnp.ndarray, ker: jax.Array) -> jnp.ndarray:
-        prev_tail = prev_bd[1:-1]
+        prev_tail = prev_bd[..., 1:-1]
 
         if self.order <= 1:
-            return jnp.empty((0,), dtype=prev_bd.dtype)
+            return jnp.empty(prev_tail.shape[:-1] + (0,), dtype=prev_bd.dtype)
 
         tail_update = []
         for row in range(self.order - 1):
-            coeffs = self.mat1[row, :row + 1] * prev_tail[:row + 1]
-            acc = coeffs[0]
-            for coeff in coeffs[1:]:
-                acc = acc * ker + coeff
+            coeffs = self.mat1[row, :row + 1] * prev_tail[..., :row + 1]
+            acc = coeffs[..., 0]
+            for coeff_idx in range(1, row + 1):
+                acc = acc * ker + coeffs[..., coeff_idx]
             tail_update.append(acc * ker)
 
-        return jnp.stack(tail_update)
+        return jnp.stack(tail_update, axis=-1)
     
 
     ########################################################################
@@ -126,48 +109,44 @@ class MonomialApproximationSolver:
                                X: jnp.ndarray,
                                Y: jnp.ndarray,
                                sym : bool = False) -> jnp.ndarray:
-        
-        def _get_kernel(i : int, j : int, k : int):
-            if sym:
-                return jnp.where((k != -1) & (i >= j), self.static_kernel(X[i,k+1], X[i,k], Y[j,p-k], Y[j,p-k-1]), 0.)
-            else:
-                return jnp.where(k != -1, self.static_kernel(X[i,k+1], X[i,k], Y[j,p-k], Y[j,p-k-1]), 0.)
-
-
-        return jax.vmap(
-                jax.vmap(
-                 jax.vmap(_get_kernel, in_axes=(None, None, 0)),
-                 in_axes=(None, 0, None)),
-                in_axes=(0, None, None)
-               )(jnp.arange(X.shape[0]), jnp.arange(Y.shape[0]), diag_axis_masked)
-
-    @partial(jax.jit, static_argnums=(0, 5))
-    def _get_diag_data(self, 
-                       p: int, 
-                       diag_axis_masked: jnp.ndarray, 
-                       X: jnp.ndarray, 
-                       Y: jnp.ndarray,
-                       sym : bool = False) -> jnp.ndarray:
-
-        if self.static_ker != 'linear':
-            return self._get_diag_data_generic(p, diag_axis_masked, X, Y, sym)
-
         valid_mask = diag_axis_masked != -1
         x_idx = jnp.where(valid_mask, diag_axis_masked, 0)
         y_idx = jnp.where(valid_mask, p - diag_axis_masked - 1, 0)
 
-        dX = X[:, 1:] - X[:, :-1]
-        dY = Y[:, 1:] - Y[:, :-1]
+        x2 = jnp.take(X, x_idx + 1, axis=1)[:, None, :, :]
+        x1 = jnp.take(X, x_idx, axis=1)[:, None, :, :]
+        y2 = jnp.take(Y, y_idx + 1, axis=1)[None, :, :, :]
+        y1 = jnp.take(Y, y_idx, axis=1)[None, :, :, :]
 
-        dX_diag = jnp.take(dX, x_idx, axis=1)
-        dY_diag = jnp.take(dY, y_idx, axis=1)
-
-        diag_data = (self.scale ** 2) * jnp.einsum('xkc,ykc->xyk', dX_diag, dY_diag)
+        diag_data = self.static_kernel(x2, x1, y2, y1)
         diag_data = diag_data * valid_mask[None, None, :].astype(X.dtype)
 
         if sym:
             lower_tri_mask = jnp.arange(X.shape[0])[:, None] >= jnp.arange(Y.shape[0])[None, :]
             diag_data = diag_data * lower_tri_mask[..., None].astype(X.dtype)
+
+        return diag_data
+
+    @partial(jax.jit, static_argnums=(0, 5))
+    def _get_diag_data_linear(self,
+                              p: int,
+                              diag_axis_masked: jnp.ndarray,
+                              dX: jnp.ndarray,
+                              dY: jnp.ndarray,
+                              sym : bool = False) -> jnp.ndarray:
+        valid_mask = diag_axis_masked != -1
+        x_idx = jnp.where(valid_mask, diag_axis_masked, 0)
+        y_idx = jnp.where(valid_mask, p - diag_axis_masked - 1, 0)
+
+        dX_diag = jnp.take(dX, x_idx, axis=1)
+        dY_diag = jnp.take(dY, y_idx, axis=1)
+
+        diag_data = (self.scale ** 2) * jnp.einsum('xkc,ykc->xyk', dX_diag, dY_diag)
+        diag_data = diag_data * valid_mask[None, None, :].astype(dX.dtype)
+
+        if sym:
+            lower_tri_mask = jnp.arange(dX.shape[0])[:, None] >= jnp.arange(dY.shape[0])[None, :]
+            diag_data = diag_data * lower_tri_mask[..., None].astype(dX.dtype)
 
         return diag_data
     
@@ -176,13 +155,16 @@ class MonomialApproximationSolver:
     # Solution updates
     ########################################################################
     
-    @partial(jax.jit, static_argnums=(0,5))
-    def _solution_diag_update(self,
-                              p : int,
-                              diag_axis_mask : jnp.ndarray,
-                              diag_solution_minus1 : jnp.ndarray,
-                              diag_data : jnp.ndarray,
-                              sym : bool = False):
+    @partial(jax.jit, static_argnums=(0,8))
+    def _solution_diag_update_active(self,
+                                     p : int,
+                                     active_k : jnp.ndarray,
+                                     active_len : jax.Array,
+                                     prev_first_k : jax.Array,
+                                     prev_active_len : jax.Array,
+                                     prev_diag_solution : jnp.ndarray,
+                                     diag_data : jnp.ndarray,
+                                     sym : bool = False):
         """
         Given the data kernel evaluations for the current diagonal, update the solution 
         along that diagonal.
@@ -190,36 +172,44 @@ class MonomialApproximationSolver:
         mat2 = self.mat2
 
         ic = self._initial_conditions(self.order, diag_data.dtype)
-        zeros = jnp.empty_like(ic) 
+        max_active_len = active_k.shape[0]
+        active_mask = jnp.arange(max_active_len) < active_len
 
-        def _solution_single_update(i : int, j : int, k : int):
+        idx1, idx2, idx_data = get_idx(active_k)
 
-            idx1, idx2, idx_data = self._get_idx(k)
+        prev_rel_idx1 = idx1 - prev_first_k
+        prev_rel_idx2 = idx2 - prev_first_k
+        prev_mask1 = active_mask & (prev_rel_idx1 >= 0) & (prev_rel_idx1 < prev_active_len)
+        prev_mask2 = active_mask & (prev_rel_idx2 >= 0) & (prev_rel_idx2 < prev_active_len)
 
-            prev_bd          = diag_solution_minus1[i, j, idx1]         
-            prev_bd_opposite = diag_solution_minus1[i, j, idx2]
-            ker              = diag_data[i, j, idx_data]                     
+        safe_prev_idx1 = jnp.clip(prev_rel_idx1, 0, max_active_len - 1)
+        safe_prev_idx2 = jnp.clip(prev_rel_idx2, 0, max_active_len - 1)
+        safe_data_idx = jnp.clip(idx_data, 0, diag_data.shape[2] - 1)
 
-            ker_powers = jnp.power(ker, jnp.arange(1,self.order+1))
+        prev_bd = jnp.take(prev_diag_solution, safe_prev_idx1, axis=2)
+        prev_bd_opposite = jnp.take(prev_diag_solution, safe_prev_idx2, axis=2)
+        prev_bd = prev_bd * prev_mask1[None, None, :, None].astype(prev_diag_solution.dtype)
+        prev_bd_opposite = prev_bd_opposite * prev_mask2[None, None, :, None].astype(prev_diag_solution.dtype)
 
-            new_bc = prev_bd.at[0].set(jnp.sum(prev_bd_opposite))
-            new_bc = new_bc.at[1:].add(jnp.dot(mat2, prev_bd_opposite) * ker_powers)
-            new_bc = new_bc.at[2:].add(self._direct_mat1_update(prev_bd, ker))
+        ker = jnp.take(diag_data, safe_data_idx, axis=2)
+        ker = ker * active_mask[None, None, :].astype(diag_data.dtype)
+        ker_powers = jnp.power(ker[..., None], jnp.arange(1, self.order + 1, dtype=diag_data.dtype))
 
-            # If sym=True, only update when i >= j.
-            if sym:
-                return jnp.where((k != -1) & (i >= j), jnp.where((k == 0) | (k == 2*p+1), ic, new_bc), zeros)
-            else:
-                return jnp.where(k != -1, jnp.where((k == 0) | (k == 2*p+1), ic, new_bc), zeros)
-        
-        return jax.vmap(
-                jax.vmap(
-                 jax.vmap(_solution_single_update, in_axes=(None, None, 0)),
-                 in_axes=(None, 0, None)),
-                in_axes=(0, None, None)
-               )(jnp.arange(diag_solution_minus1.shape[0]), 
-                 jnp.arange(diag_solution_minus1.shape[1]), 
-                 diag_axis_mask)
+        mat2_update = jnp.einsum("ab,xykb->xyka", mat2, prev_bd_opposite)
+
+        new_bc = prev_bd.at[..., 0].set(jnp.sum(prev_bd_opposite, axis=-1))
+        new_bc = new_bc.at[..., 1:].add(mat2_update * ker_powers)
+        new_bc = new_bc.at[..., 2:].add(self._direct_mat1_update(prev_bd, ker))
+
+        boundary_mask = active_mask & ((active_k == 0) | (active_k == 2 * p + 1))
+        output = jnp.where(boundary_mask[None, None, :, None], ic, new_bc)
+        output = output * active_mask[None, None, :, None].astype(diag_data.dtype)
+
+        if sym:
+            lower_tri_mask = jnp.arange(diag_data.shape[0])[:, None] >= jnp.arange(diag_data.shape[1])[None, :]
+            output = output * lower_tri_mask[..., None, None].astype(diag_data.dtype)
+
+        return output
 
 
 
@@ -245,29 +235,52 @@ class MonomialApproximationSolver:
         # Problem sizes
         batch_X, batch_Y = X.shape[0], Y.shape[0]
         length_X, length_Y = X.shape[1], Y.shape[1]
-        diag_length = 2 * (length_X - 1)                #(jnp.maximum(length_X, length_Y) - 1) * 2
         diag_iterations = length_X + length_Y - 3    
+        max_active_len = 2 * min(length_X - 1, length_Y - 1)
+        dX = X[:, 1:] - X[:, :-1] if self.static_ker == 'linear' else None
+        dY = Y[:, 1:] - Y[:, :-1] if self.static_ker == 'linear' else None
 
-        diag_solution_minus1 = jnp.zeros(shape=(batch_X, batch_Y, diag_length, self.order + 1), dtype = X.dtype).at[..., 0].set(1.0)
+        diag_solution_minus1 = jnp.zeros(
+            shape=(batch_X, batch_Y, max_active_len, self.order + 1),
+            dtype=X.dtype,
+        ).at[..., 0].set(1.0)
+        init_carry = (
+            jnp.array(0, dtype=jnp.int32),
+            jnp.array(max_active_len, dtype=jnp.int32),
+            diag_solution_minus1,
+        )
 
         def _loop(p, carry):
 
-            diag_solution_minus1 = carry
+            prev_first_k, prev_active_len, diag_solution_minus1 = carry
+            first_k, active_len = self._active_diag_window(p, length_X, length_Y)
+            active_k = first_k + jnp.arange(max_active_len, dtype=jnp.int32)
 
-            diag_axis_mask_solution, diag_axis_mask_data = self._diag_axis_masks(p, length_X, length_Y)
-            diag_data = self._get_diag_data(p, diag_axis_mask_data, X, Y, sym)
+            _, diag_axis_mask_data = diag_axis_masks(p, length_X, length_Y)
+            if self.static_ker == 'linear':
+                diag_data = self._get_diag_data_linear(p, diag_axis_mask_data, dX, dY, sym)
+            else:
+                diag_data = self._get_diag_data_generic(p, diag_axis_mask_data, X, Y, sym)
 
-            diag_solution = self._solution_diag_update(p, 
-                                                       diag_axis_mask_solution, 
-                                                       diag_solution_minus1, 
-                                                       diag_data,
-                                                       sym) 
+            diag_solution = self._solution_diag_update_active(
+                p,
+                active_k,
+                active_len,
+                prev_first_k,
+                prev_active_len,
+                diag_solution_minus1,
+                diag_data,
+                sym,
+            )
 
-            return diag_solution
+            return first_k, active_len, diag_solution
         
-        diag_solutions = jax.lax.fori_loop(1, diag_iterations+1, _loop, (diag_solution_minus1))
-
-        solution = jnp.mean(jnp.sum(diag_solutions[:,:,-2:,:], axis=-1), axis=-1)
+        _, final_active_len, diag_solutions = jax.lax.fori_loop(1, diag_iterations+1, _loop, init_carry)
+        final_mask = (jnp.arange(max_active_len) < final_active_len).astype(X.dtype)
+        solution = jnp.sum(
+            jnp.sum(diag_solutions, axis=-1) * final_mask[None, None, :],
+            axis=-1,
+        ) / final_active_len.astype(X.dtype)
 
         if sym:
             return solution + solution.swapaxes(0,1) - jnp.diag(jnp.diag(solution)) 

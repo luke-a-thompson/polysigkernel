@@ -8,6 +8,7 @@ import pandas as pd
 from tqdm import tqdm
 import argparse
 import timeit
+from pathlib import Path
 
 
 if __name__ == '__main__':
@@ -32,11 +33,15 @@ if __name__ == '__main__':
     parser.add_argument('--number', type=int, default=6, help='Number fo runs in a repeat loop')
     parser.add_argument('--repeat', type=int, default=6, help='Number of repeat loops')
 
-    parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'gpu'], help='Device to run the code.')
+    parser.add_argument('--device', type=str, default='gpu', choices=['cpu', 'gpu'], help='Device to run the code.')
     parser.add_argument('--dtype', type=str, default='float32', choices=['float32', 'float64'], 
                         help='Data type for the data. Default is float32 for gpu and float64 for cpu.')
 
     args = parser.parse_args()
+
+    output_dir = Path(__file__).resolve().parent / 'results'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f'{args.filename}.csv'
 
     if isinstance(args.solvers, str):
         args.solvers = [args.solvers]
@@ -194,7 +199,7 @@ if __name__ == '__main__':
 
                     df.loc[len(df.index)] = ['order', solver, args.device, dtype_str, args.batch_size, default_length, default_dim, order, time_elapsed]
 		
-            df.to_csv('results/' + args.filename + '.csv', index=False)
+            df.to_csv(output_path, index=False)
 
         if args.sigkerax:
                     
@@ -209,7 +214,7 @@ if __name__ == '__main__':
 
                 df.loc[len(df.index)] = ['order', 'sigkerax', args.device, dtype_str, args.batch_size, default_length, default_dim, refinement_factor, time_elapsed]
 
-            df.to_csv('results/' + args.filename + '.csv', index=False)	
+            df.to_csv(output_path, index=False)	
 
-    df.to_csv('results/' + args.filename + '.csv', index=False)
+    df.to_csv(output_path, index=False)
     
