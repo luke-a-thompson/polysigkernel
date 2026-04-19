@@ -8,26 +8,27 @@ from jax import lax
 
 DOUBLE_PRECISION = 1e-15
 
-def _hyp_0f1_serie(a,x):
-      
+
+def _hyp_0f1_serie(a, x):
+
+    safe_a = jnp.where(a == 0, jnp.ones_like(a), a)
+
     def body(state):
         serie, k, term = state
-        serie += term
-        term *= x / (k + 1)  / (a + k)
-        k += 1
+        serie = serie + term
+        term = term * x / (k + 1) / (a + k)
+        k = k + 1
         return serie, k, term
-    
+
     def cond(state):
         serie, k, term = state
         return (k < 250) & (lax.abs(term) / lax.abs(serie) > DOUBLE_PRECISION)
-    
-    init = 1, 1, x / a
+
+    init = (jnp.asarray(1.0, dtype=x.dtype),
+            jnp.asarray(1, dtype=jnp.int32),
+            x / safe_a)
 
     return lax.while_loop(cond, body, init)[0]
-
-# TODO - implement this 
-def _hyp_0f1_asymptotic(a,x):
-    return jnp.inf
 
 
 @jax.jit
@@ -35,8 +36,11 @@ def _hyp_0f1_asymptotic(a,x):
 def hyp0f1(a, x):
     """
     Implements the hypergeometric function 0F1 in jax using lax backend.
-    """  
-    result = lax.cond(lax.abs(x) < 100, _hyp_0f1_serie, _hyp_0f1_asymptotic, a, x)
-    index = (a == 0) * 1 
 
+    Uses a truncated power series (capped at 250 terms). Accurate for |x| up to
+    a few hundred; an asymptotic expansion for large |x| is not implemented.
+    When a == 0 the function returns +inf by convention.
+    """
+    result = _hyp_0f1_serie(a, x)
+    index = (a == 0) * 1
     return lax.select_n(index, result, jnp.array(jnp.inf, dtype=x.dtype))

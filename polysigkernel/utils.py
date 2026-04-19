@@ -27,4 +27,4 @@ def _check_positive_integer(value: int, name: str):
     
 def _check_positive_value(value: float, name: str):
     if value <= 0:
-        raise ValueError(f"{name} must be a positive, got {value}.")
+        raise ValueError(f"{name} must be positive, got {value}.")

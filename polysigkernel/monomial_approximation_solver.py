@@ -202,9 +202,8 @@ class MonomialApproximationSolver:
         diag_length = 2 * (length_X - 1)                #(jnp.maximum(length_X, length_Y) - 1) * 2
         diag_iterations = length_X + length_Y - 3    
 
-        diag_solution_minus1 = jnp.zeros(shape=(batch_X, batch_Y, diag_length, self.order + 1), dtype = X.dtype).at[..., 0].set(1.0) 
-        #diag_solution_minus1 = diag_solution_minus1
-    
+        diag_solution_minus1 = jnp.zeros(shape=(batch_X, batch_Y, diag_length, self.order + 1), dtype = X.dtype).at[..., 0].set(1.0)
+
         def _loop(p, carry):
 
             diag_solution_minus1 = carry
@@ -256,10 +255,12 @@ class MonomialApproximationSolver:
         num_parallel = (total // num_gpus) * num_gpus
         remaining    = total - num_parallel
 
-        # Parallise solver across GPUs
+        # Parallise solver across GPUs. Close over sym so the static arg survives pmap.
+        solve_fn = lambda X_shard, Y_shared: self._solve(X_shard, Y_shared, sym)
+
         X_parallel = X[:num_parallel]
         X_sub_tensors = jnp.stack(jnp.array_split(X_parallel, num_gpus))
-        Z_sub_tensors = jax.pmap(self._solve, in_axes=(0, None))(X_sub_tensors, Y)
+        Z_sub_tensors = jax.pmap(solve_fn, in_axes=(0, None))(X_sub_tensors, Y)
         Z = jnp.concatenate(Z_sub_tensors, axis=0)
 
         # If all the data has been used just return it
@@ -268,6 +269,6 @@ class MonomialApproximationSolver:
 
         # Otherwise perform the final computation on a single GPU and concatenate with the rest
         X_remainder = X[num_parallel:]
-        Z_remainder = self._solve(X_remainder, Y)
+        Z_remainder = self._solve(X_remainder, Y, sym)
 
         return jnp.concatenate([Z, Z_remainder], axis=0)
